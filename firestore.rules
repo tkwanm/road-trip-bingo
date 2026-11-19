@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function room(code) { return get(/databases/$(database)/documents/rooms/$(code)).data; }
+    function isPlayer(code) {
+      return exists(/databases/$(database)/documents/rooms/$(code)/players/$(request.auth.uid));
+    }
+    function claimData(code, key) {
+      return get(/databases/$(database)/documents/rooms/$(code)/claims/$(key)).data;
+    }
+    function duelData(code, id) {
+      return get(/databases/$(database)/documents/rooms/$(code)/duels/$(id)).data;
+    }
+
+    match /rooms/{code} {
+      allow read: if signedIn();
+      // Anyone signed in can start a trip; they become its host (the referee).
+      allow create: if signedIn()
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.status == 'live'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 40;
+      // Only the host can change the trip (e.g. end it).
+      allow update: if signedIn() && resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostUid == resource.data.hostUid;
+
+      match /players/{uid} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1
+          && request.resource.data.name.size() <= 20;
+        allow delete: if signedIn() && (request.auth.uid == uid || room(code).hostUid == request.auth.uid);
+      }
+
+      match /claims/{key} {
+        allow read: if signedIn();
+        // A claim can only be CREATED, never overwritten: this is what stops two
+        // people claiming the same sighting, even if they tap at the same moment.
+        allow create: if signedIn()
+          && isPlayer(code)
+          && room(code).status == 'live'
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'at'])
+          && key in [
+            'elephant','tracks','music','cows','atm-1','atm-2','atm-3',
+            'birds','canetruck','giraffe','fruit','kombi',
+            'emahiya','monkey','braai','hiker',
+            'usutu','bakkie','raptor','zebra','goats',
+            'head','police','flag','donkey','impala',
+            'w-train','w-hornbill','w-horse','w-rainbow','w-church','w-yellowcar','w-tortoise','w-banana'
+          ];
+        // The only change allowed: handing a claim to the winner of a finished
+        // rock-paper-scissors duel over that exact claim.
+        allow update: if signedIn()
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'at', 'duelId'])
+          && duelData(code, request.resource.data.duelId).key == key
+          && duelData(code, request.resource.data.duelId).status == 'done'
+          && duelData(code, request.resource.data.duelId).winner == request.resource.data.uid
+          && resource.data.uid == duelData(code, request.resource.data.duelId).a
+          && request.auth.uid in [duelData(code, request.resource.data.duelId).a,
+                                  duelData(code, request.resource.data.duelId).b];
+        // You can undo your own claim; the host (referee) can remove anyone's.
+        allow delete: if signedIn() && room(code).status == 'live'
+          && (resource.data.uid == request.auth.uid || room(code).hostUid == request.auth.uid);
+      }
+
+      // Rock-paper-scissors duels. A duel can only be started by someone who tried
+      // to claim the same sighting within 2 seconds of the winning claim — the
+      // server's clock decides, so nobody can fake a tie later.
+      match /duels/{id} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && isPlayer(code)
+          && room(code).status == 'live'
+          && request.resource.data.b == request.auth.uid
+          && request.resource.data.status == 'live'
+          && request.resource.data.round == 1
+          && exists(/databases/$(database)/documents/rooms/$(code)/claims/$(request.resource.data.key))
+          && claimData(code, request.resource.data.key).uid == request.resource.data.a
+          && request.resource.data.a != request.auth.uid
+          && request.time < claimData(code, request.resource.data.key).at + duration.value(2, 's');
+        // Only the two duellists can play moves or settle rounds, and only while it's live.
+        allow update: if signedIn()
+          && resource.data.status == 'live'
+          && request.auth.uid in [resource.data.a, resource.data.b]
+          && request.resource.data.a == resource.data.a
+          && request.resource.data.b == resource.data.b
+          && request.resource.data.key == resource.data.key;
+      }
+    }
+  }
+}
