@@ -21,7 +21,9 @@ service cloud.firestore {
         && request.resource.data.hostUid == request.auth.uid
         && request.resource.data.status == 'live'
         && request.resource.data.name is string
-        && request.resource.data.name.size() <= 40;
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.slots is list
+        && request.resource.data.slots.size() <= 40;
       // Only the host can change the trip (e.g. end it).
       allow update: if signedIn() && resource.data.hostUid == request.auth.uid
         && request.resource.data.hostUid == resource.data.hostUid;
@@ -44,14 +46,7 @@ service cloud.firestore {
           && room(code).status == 'live'
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.keys().hasOnly(['uid', 'name', 'at'])
-          && key in [
-            'elephant','tracks','music','cows','atm-1','atm-2','atm-3',
-            'birds','canetruck','giraffe','fruit','kombi',
-            'emahiya','monkey','braai','hiker',
-            'usutu','bakkie','raptor','zebra','goats',
-            'head','police','flag','donkey','impala',
-            'w-train','w-hornbill','w-horse','w-rainbow','w-church','w-yellowcar','w-tortoise','w-banana'
-          ];
+          && key in room(code).slots;
         // The only change allowed: handing a claim to the winner of a finished
         // rock-paper-scissors duel over that exact claim.
         allow update: if signedIn()

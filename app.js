@@ -5,57 +5,71 @@ import {
   onSnapshot, runTransaction, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { POOL, FREE_OPTIONS } from "./items.js";
 
 /* ---------- Game content ---------- */
-const GRID = [
-  { id: "elephant", label: "Elephant", pts: 5 },
-  { id: "tracks", label: "Railway tracks", pts: 1 },
-  { id: "music", label: "A spot blasting music", pts: 1 },
-  { id: "cows", label: "Cows on the road", pts: 1 },
-  { id: "atm", label: "SBS ATM", pts: 2, max: 3 },
+// The 100-sighting pool lives in items.js. Each trip deals its own card from it,
+// stored on the trip so every player in the group sees the same squares.
+const ITEM = Object.fromEntries(POOL.map(i => [i.id, i]));
+let GRID = [];  // 25 items, index 12 is the free square
+let WILD = [];  // 8 rare items
 
-  { id: "birds", label: "Two birds sitting together", pts: 1 },
-  { id: "canetruck", label: "Sugar-cane truck", pts: 2 },
-  { id: "giraffe", label: "Giraffe", pts: 5 },
-  { id: "fruit", label: "Roadside fruit stall", pts: 1 },
-  { id: "kombi", label: "Kombi with roof load or trailer", pts: 2 },
+function shuffle(arr) {
+  const a = arr.slice();
+  const r = new Uint32Array(a.length);
+  crypto.getRandomValues(r);
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = r[i] % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
-  { id: "emahiya", label: "Someone wearing emahiya", pts: 2 },
-  { id: "monkey", label: "Monkey or baboon", pts: 2 },
-  { id: "free", label: "Sugar-cane fields", free: true },
-  { id: "braai", label: "Roadside braai stand", pts: 2 },
-  { id: "hiker", label: "Hitchhiker", pts: 1 },
+// A balanced deal: SBS ATM always, 2 big-game squares for the end of the drive,
+// 4 lucky (3 pts), 8 likely (2 pts), 9 near-certain (1 pt), max 7 of any one category.
+function dealCard() {
+  const pickFrom = (list, n, taken, catCount) => {
+    const out = [];
+    for (const it of shuffle(list)) {
+      if (out.length === n) break;
+      if (taken.has(it.id)) continue;
+      if ((catCount[it.cat] || 0) >= 7) continue;
+      out.push(it); taken.add(it.id); catCount[it.cat] = (catCount[it.cat] || 0) + 1;
+    }
+    return out;
+  };
+  const taken = new Set(["atm"]);
+  const cats = { roadside: 1 };
+  const normal = i => i.cat !== "reserve" && i.id !== "atm";
+  const cells = [
+    ITEM.atm,
+    ...pickFrom(POOL.filter(i => i.cat === "reserve"), 2, taken, cats),
+    ...pickFrom(POOL.filter(i => normal(i) && i.pts === 3), 4, taken, cats),
+    ...pickFrom(POOL.filter(i => normal(i) && i.pts === 2), 8, taken, cats),
+    ...pickFrom(POOL.filter(i => normal(i) && i.pts === 1), 9, taken, cats)
+  ];
+  const grid = shuffle(cells).map(i => i.id);
+  grid.splice(12, 0, "free");
+  const wild = pickFrom(POOL.filter(i => normal(i) && i.pts >= 4), 8, taken, {}).map(i => i.id);
+  const free = shuffle(FREE_OPTIONS)[0];
+  const slots = [...grid.filter(id => id !== "free" && id !== "atm"), ...ATM_KEYS, ...wild];
+  return { grid, wild, free, slots };
+}
 
-  { id: "usutu", label: "Crossing the Usutu River", pts: 1 },
-  { id: "bakkie", label: "Bakkie with people in the back", pts: 1 },
-  { id: "raptor", label: "Bird of prey on a pole", pts: 3 },
-  { id: "zebra", label: "Zebra", pts: 3 },
-  { id: "goats", label: "Goats on the road", pts: 1 },
+function loadCard(room) {
+  if (!room || !Array.isArray(room.grid)) { GRID = []; WILD = []; return; }
+  GRID = room.grid.map(id => id === "free" ? { id: "free", label: room.free || "Free square", free: true } : (ITEM[id] || { id, label: id, pts: 0 }));
+  WILD = (room.wild || []).map(id => ITEM[id] || { id, label: id, pts: 0 });
+}
 
-  { id: "head", label: "Load carried on a head", pts: 1 },
-  { id: "police", label: "Police roadblock", pts: 2 },
-  { id: "flag", label: "Eswatini flag", pts: 1 },
-  { id: "donkey", label: "Donkey", pts: 2 },
-  { id: "impala", label: "Impala or antelope", pts: 2 }
-];
-const WILD = [
-  { id: "w-train", label: "A train actually moving" },
-  { id: "w-hornbill", label: "A hornbill" },
-  { id: "w-horse", label: "Someone on horseback" },
-  { id: "w-rainbow", label: "A rainbow" },
-  { id: "w-church", label: "A church service outdoors" },
-  { id: "w-yellowcar", label: "A yellow car" },
-  { id: "w-tortoise", label: "A tortoise near the road" },
-  { id: "w-banana", label: "Banana trees" }
-];
-const WILD_PTS = 4;
+const ATM_KEYS = ["atm-1", "atm-2", "atm-3"];
 const LINE_BONUS = 5;
 const LINES = [
   [0,1,2,3,4],[5,6,7,8,9],[10,11,12,13,14],[15,16,17,18,19],[20,21,22,23,24],
   [0,5,10,15,20],[1,6,11,16,21],[2,7,12,17,22],[3,8,13,18,23],[4,9,14,19,24],
   [0,6,12,18,24],[4,8,12,16,20]
 ];
-const ATM_SLOTS = ["atm-1", "atm-2", "atm-3"];
+const ATM_SLOTS = ATM_KEYS;
 // Duels: a second tap that lands within 2 s of the first claim (server clock) starts
 // a best-of-3 rock-paper-scissors duel, 5 s per round.
 const ROUND_MS = 5000;
@@ -70,14 +84,13 @@ const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 function labelFor(key) {
   if (key.startsWith("atm-")) return "SBS ATM";
-  const it = GRID.find(g => g.id === key) || WILD.find(w => w.id === key);
+  const it = ITEM[key];
   return it ? it.label : key;
 }
 
 function pointsFor(key) {
-  if (key.startsWith("w-")) return WILD_PTS;
-  if (key.startsWith("atm-")) return 2;
-  const it = GRID.find(g => g.id === key);
+  if (key.startsWith("atm-")) return ITEM.atm.pts;
+  const it = ITEM[key];
   return it ? it.pts : 0;
 }
 
@@ -169,7 +182,7 @@ function computeScores() {
   for (const [key, c] of Object.entries(S.claims)) {
     const r = row(c.uid);
     r.count++;
-    if (key.startsWith("w-")) r.wild += WILD_PTS; else r.spot += pointsFor(key);
+    if (WILD.some(w => w.id === key)) r.wild += pointsFor(key); else r.spot += pointsFor(key);
   }
   // Whoever ticks the LAST square of a full row, column or diagonal earns the bonus.
   const states = GRID.map((_, i) => tileState(i));
@@ -191,7 +204,7 @@ async function createTrip(tripName, playerName) {
     const ref = doc(db, "rooms", code);
     const existing = await getDoc(ref);
     if (existing.exists()) continue;
-    await setDoc(ref, { name: tripName, hostUid: S.uid, status: "live", createdAt: serverTimestamp() });
+    await setDoc(ref, { name: tripName, hostUid: S.uid, status: "live", createdAt: serverTimestamp(), ...dealCard() });
     await joinTrip(code, playerName, true);
     return;
   }
@@ -229,6 +242,7 @@ function enterTrip(code) {
   const onErr = () => toast("Connection problem — retrying…");
   S.unsubs.push(onSnapshot(doc(db, "rooms", code), snap => {
     S.room = snap.exists() ? snap.data() : null;
+    loadCard(S.room);
     render();
   }, onErr));
   S.unsubs.push(onSnapshot(collection(db, "rooms", code, "players"), snap => {
@@ -311,6 +325,12 @@ async function claimAtm() {
     if (!snap.exists()) { await claim(k); return; }
   }
   toast("All 3 ATMs have been claimed.");
+}
+
+async function newCard() {
+  if (Object.keys(S.claims).length) { toast("Cards can only be re-dealt before anyone claims."); return; }
+  try { await updateDoc(doc(db, "rooms", S.code), dealCard()); toast("Fresh card dealt to everyone!"); }
+  catch (e) { toast("Only the host can deal a new card."); }
 }
 
 async function endTrip() {
@@ -596,7 +616,9 @@ function viewCard() {
       <span>${esc(it.label)}</span><span class="pts">${ptsText(it.pts)}</span>
     </button>`;
   }).join("");
+  const canDeal = isHost() && isLive() && !Object.keys(S.claims).length;
   return `<div class="grid">${tiles}</div>
+    ${canDeal ? `<button type="button" class="btn btn-ghost btn-small" data-action="new-card" style="margin-top:12px">Deal a different card</button>` : ""}
     <p class="legend">Tap a square the moment you spot it. Close a full row, column or diagonal (last square ticked) for +${LINE_BONUS}.</p>`;
 }
 
@@ -606,16 +628,16 @@ function viewWild() {
     if (c) {
       const col = colorFor(c.uid);
       return `<div class="wild claimed" style="border-color:${col};background:${col}1A">
-        <div><div class="label">${esc(w.label)}</div><div class="sub"><span class="dot" style="background:${col}"></span>${esc(nameFor(c))} · ${WILD_PTS} pts</div></div>
+        <div><div class="label">${esc(w.label)}</div><div class="sub"><span class="dot" style="background:${col}"></span>${esc(nameFor(c))} · ${ptsText(w.pts)}</div></div>
         ${(c.uid === S.uid || isHost()) && isLive() ? `<button type="button" class="btn btn-ghost btn-small" data-action="claimed" data-key="${w.id}">Undo</button>` : ""}
       </div>`;
     }
     return `<div class="wild">
-      <div><div class="label">${esc(w.label)}</div><div class="sub">${WILD_PTS} pts · rare</div></div>
+      <div><div class="label">${esc(w.label)}</div><div class="sub">${ptsText(w.pts)} · rare</div></div>
       <button type="button" class="btn btn-primary btn-small" style="width:auto" data-action="claim" data-key="${w.id}" ${isLive() ? "" : "disabled"}>Claim</button>
     </div>`;
   }).join("");
-  return `<p class="muted" style="margin:0 0 10px">Bonus sightings off the card. Worth ${WILD_PTS} points each.</p><div class="wild-list">${rows}</div>`;
+  return `<p class="muted" style="margin:0 0 10px">Rare bonus sightings off the card. Anyone can claim them.</p><div class="wild-list">${rows}</div>`;
 }
 
 function viewScores() {
@@ -709,7 +731,7 @@ function closeSheet() { sheetRoot.innerHTML = ""; }
 function sheetForClaimed(key) {
   const c = S.claims[key];
   if (!c) return;
-  const label = (GRID.find(g => g.id === key) || WILD.find(w => w.id === key) || {}).label || key;
+  const label = labelFor(key);
   const canRemove = isLive() && (c.uid === S.uid || isHost());
   openSheet(`
     <h3>${esc(label)}</h3>
@@ -770,6 +792,7 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "end") { closeSheet(); await endTrip(); return; }
+  if (a === "new-card") { el.disabled = true; await newCard(); return; }
   if (a === "share") {
     const url = shareUrl();
     const text = `Join our Road Trip Bingo! Code ${S.code}`;

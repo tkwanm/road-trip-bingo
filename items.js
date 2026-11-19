@@ -1,0 +1,127 @@
+// Road Trip Bingo — the sighting pool for Mbabane → Manzini → Big Bend → Lavumisa.
+// Every new trip deals a fresh card from this list, so repeat trips get new squares.
+//
+// pts: 1 = you'll almost certainly see it · 2 = likely · 3 = lucky · 4 = rare (wild-card pool) · 5 = big game
+// cat: used to keep each card varied.
+// ids: letters, digits and dashes only (they become database keys). Don't rename an id mid-trip.
+
+export const POOL = [
+  // ---------- Animals ----------
+  { id: "elephant", label: "Elephant", pts: 5, cat: "reserve" },
+  { id: "giraffe", label: "Giraffe", pts: 5, cat: "reserve" },
+  { id: "rhino", label: "Rhino", pts: 5, cat: "reserve" },
+  { id: "zebra", label: "Zebra", pts: 4, cat: "reserve" },
+  { id: "impala", label: "Impala or other antelope", pts: 2, cat: "animal" },
+  { id: "monkey", label: "Monkey or baboon", pts: 2, cat: "animal" },
+  { id: "cows", label: "Cows on or crossing the road", pts: 1, cat: "animal" },
+  { id: "goats", label: "Goats on the road", pts: 1, cat: "animal" },
+  { id: "donkey", label: "Donkey", pts: 2, cat: "animal" },
+  { id: "horse", label: "A horse grazing", pts: 2, cat: "animal" },
+  { id: "pig", label: "A pig", pts: 3, cat: "animal" },
+  { id: "chickens", label: "Chickens by the road", pts: 1, cat: "animal" },
+  { id: "dog-chase", label: "Dog chasing a car", pts: 2, cat: "animal" },
+  { id: "herder", label: "Cattle herd with a herder", pts: 1, cat: "animal" },
+  { id: "birds", label: "Two birds sitting together", pts: 1, cat: "animal" },
+  { id: "raptor", label: "Bird of prey on a pole", pts: 3, cat: "animal" },
+  { id: "hornbill", label: "A hornbill", pts: 4, cat: "animal" },
+  { id: "vulture", label: "Vultures circling", pts: 4, cat: "animal" },
+  { id: "ostrich", label: "An ostrich", pts: 4, cat: "animal" },
+  { id: "weaver", label: "Weaver nests hanging in a tree", pts: 2, cat: "animal" },
+  { id: "egret", label: "White bird riding on a cow", pts: 3, cat: "animal" },
+  { id: "warthog", label: "A warthog", pts: 4, cat: "animal" },
+  { id: "tortoise", label: "A tortoise near the road", pts: 4, cat: "animal" },
+  { id: "guineafowl", label: "Guinea fowl", pts: 3, cat: "animal" },
+
+  // ---------- People ----------
+  { id: "emahiya", label: "Someone wearing emahiya", pts: 2, cat: "people" },
+  { id: "head", label: "Load carried on a head", pts: 1, cat: "people" },
+  { id: "hiker", label: "Hitchhiker", pts: 1, cat: "people" },
+  { id: "horseback", label: "Someone on horseback", pts: 4, cat: "people" },
+  { id: "kids-wave", label: "Kids waving at the car", pts: 1, cat: "people" },
+  { id: "vendor-light", label: "Vendor at a traffic light", pts: 1, cat: "people" },
+  { id: "wheelbarrow", label: "Someone pushing a wheelbarrow", pts: 1, cat: "people" },
+  { id: "cyclist", label: "A cyclist", pts: 1, cat: "people" },
+  { id: "jogger", label: "Someone jogging", pts: 2, cat: "people" },
+  { id: "umbrella", label: "Umbrella used against the sun", pts: 2, cat: "people" },
+  { id: "wedding", label: "A wedding party", pts: 4, cat: "people" },
+  { id: "church-out", label: "Church service outdoors", pts: 4, cat: "people" },
+  { id: "zionist", label: "Church members in uniform", pts: 2, cat: "people" },
+  { id: "traffic-cop", label: "Traffic officer waving cars", pts: 3, cat: "people" },
+  { id: "nap", label: "Someone napping under a tree", pts: 2, cat: "people" },
+  { id: "firewood", label: "Someone carrying firewood", pts: 2, cat: "people" },
+  { id: "soccer", label: "Soccer on a dusty field", pts: 2, cat: "people" },
+  { id: "washing", label: "Washing clothes at a river", pts: 3, cat: "people" },
+
+  // ---------- Vehicles ----------
+  { id: "canetruck", label: "Sugar-cane truck", pts: 2, cat: "vehicle" },
+  { id: "kombi", label: "Kombi with roof load or trailer", pts: 2, cat: "vehicle" },
+  { id: "bakkie", label: "Bakkie with people in the back", pts: 1, cat: "vehicle" },
+  { id: "police", label: "Police roadblock", pts: 2, cat: "vehicle" },
+  { id: "yellowcar", label: "A yellow car", pts: 3, cat: "vehicle" },
+  { id: "train", label: "A train actually moving", pts: 4, cat: "vehicle" },
+  { id: "tractor", label: "A tractor", pts: 2, cat: "vehicle" },
+  { id: "ambulance", label: "An ambulance", pts: 3, cat: "vehicle" },
+  { id: "tanker", label: "Fuel tanker", pts: 2, cat: "vehicle" },
+  { id: "towing", label: "Car towing another car", pts: 3, cat: "vehicle" },
+  { id: "motorbike", label: "A motorbike", pts: 1, cat: "vehicle" },
+  { id: "bus", label: "A big bus", pts: 1, cat: "vehicle" },
+  { id: "kombi-name", label: "Kombi with a name on the back", pts: 2, cat: "vehicle" },
+  { id: "sa-plates", label: "Car with SA number plates", pts: 1, cat: "vehicle" },
+  { id: "bonnet-up", label: "Broken-down car, bonnet up", pts: 2, cat: "vehicle" },
+  { id: "beetle", label: "An old VW Beetle", pts: 3, cat: "vehicle" },
+  { id: "logtruck", label: "Truck loaded with logs", pts: 2, cat: "vehicle" },
+  { id: "cattletruck", label: "Truck carrying cattle", pts: 3, cat: "vehicle" },
+  { id: "mattress", label: "Mattress or furniture on a roof", pts: 3, cat: "vehicle" },
+  { id: "donkeycart", label: "A donkey cart", pts: 4, cat: "vehicle" },
+  { id: "policecar", label: "A police car", pts: 2, cat: "vehicle" },
+  { id: "coaltruck", label: "Truck carrying coal", pts: 3, cat: "vehicle" },
+
+  // ---------- Roadside ----------
+  { id: "atm", label: "SBS ATM", pts: 2, cat: "roadside", max: 3 },
+  { id: "music", label: "A spot blasting music", pts: 1, cat: "roadside" },
+  { id: "fruit", label: "Roadside fruit stall", pts: 1, cat: "roadside" },
+  { id: "braai", label: "Roadside braai stand", pts: 2, cat: "roadside" },
+  { id: "spaza", label: "Spaza or tuck shop", pts: 1, cat: "roadside" },
+  { id: "coke", label: "Shop painted in Coca-Cola red", pts: 1, cat: "roadside" },
+  { id: "carwash", label: "Car wash by the road", pts: 2, cat: "roadside" },
+  { id: "salon", label: "Hair salon sign", pts: 1, cat: "roadside" },
+  { id: "tyre", label: "Tyre repair sign", pts: 1, cat: "roadside" },
+  { id: "bottle", label: "Bottle store or tavern", pts: 1, cat: "roadside" },
+  { id: "mealies", label: "Mealies for sale", pts: 2, cat: "roadside" },
+  { id: "wood-sale", label: "Firewood bundles for sale", pts: 2, cat: "roadside" },
+  { id: "crafts", label: "Craft or basket stall", pts: 3, cat: "roadside" },
+  { id: "fastfood", label: "A fried-chicken shop", pts: 1, cat: "roadside" },
+  { id: "roadworks", label: "Roadworks crew", pts: 2, cat: "roadside" },
+  { id: "building", label: "House being built", pts: 1, cat: "roadside" },
+  { id: "bricks", label: "Bricks drying in rows", pts: 2, cat: "roadside" },
+  { id: "airtime", label: "Airtime seller", pts: 2, cat: "roadside" },
+
+  // ---------- Places, signs and nature ----------
+  { id: "tracks", label: "Railway tracks", pts: 1, cat: "place" },
+  { id: "usutu", label: "Crossing the Usutu River", pts: 1, cat: "place" },
+  { id: "flag", label: "Eswatini flag", pts: 1, cat: "place" },
+  { id: "hump-sign", label: "Speed hump sign", pts: 1, cat: "place" },
+  { id: "animal-sign", label: "Animal warning sign", pts: 2, cat: "place" },
+  { id: "hill-church", label: "Church on a hill", pts: 2, cat: "place" },
+  { id: "banana", label: "Banana trees", pts: 4, cat: "nature" },
+  { id: "mango", label: "Mango tree with fruit", pts: 3, cat: "nature" },
+  { id: "termite", label: "A big termite mound", pts: 2, cat: "nature" },
+  { id: "dam", label: "A dam with water", pts: 3, cat: "nature" },
+  { id: "dry-river", label: "A dry riverbed", pts: 2, cat: "nature" },
+  { id: "rainbow", label: "A rainbow", pts: 4, cat: "nature" },
+  { id: "dustdevil", label: "A dust devil (mini whirlwind)", pts: 4, cat: "nature" },
+  { id: "smoke", label: "Smoke from a veld fire", pts: 3, cat: "nature" },
+  { id: "sugarmill", label: "Sugar mill chimney", pts: 2, cat: "place" },
+  { id: "sprinklers", label: "Irrigation sprinklers on", pts: 2, cat: "nature" },
+  { id: "levelcross", label: "Level crossing", pts: 2, cat: "place" },
+  { id: "billboard", label: "Billboard in siSwati", pts: 1, cat: "place" }
+];
+
+// Guaranteed sightings for the free middle square — one is picked per trip.
+export const FREE_OPTIONS = [
+  "Sugar-cane fields",
+  "Lubombo mountains on the horizon",
+  "A fuel station",
+  "A kombi",
+  "A speed hump"
+];

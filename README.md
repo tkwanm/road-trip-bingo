@@ -11,6 +11,7 @@ Several cars in a convoy can play on the same code. Each new carpool group just 
 | `index.html` | The page |
 | `styles.css` | Sunset palette and retro poster styling |
 | `app.js` | Game logic: trips, claims, scoring, live sync |
+| `items.js` | The pool of 100 sightings for the Mbabane → Lavumisa road, with points |
 | `firebase-config.js` | **You paste your Firebase config here** |
 | `firestore.rules` | Database rules: one claim per sighting, only the host can end a trip or remove others' claims |
 
@@ -63,6 +64,19 @@ Then open http://localhost:8000. `localhost` is already an authorized domain in 
 9. **The host taps End trip** (on the Scores tab) at the reserve. Claims lock and the winner is shown.
 
 If someone's phone refreshes or they close the tab, opening the link again puts them straight back into the trip.
+
+## A fresh card every trip
+
+Every new trip deals its own card from the 100 sightings in `items.js`. Everyone in that trip gets the same card, and the next trip gets a different one. Each deal is balanced:
+
+- **SBS ATM** is always on the card.
+- **2 big-game squares**, the ones you'll mostly see near the reserve: elephant, giraffe, rhino or zebra.
+- **4 lucky squares** (3 pts), **8 likely squares** (2 pts) and **9 near-certain squares** (1 pt).
+- **No more than 7 squares from any one category**, so you won't get a card that's all animals.
+- **8 wild cards**, drawn from the rare 4-point sightings.
+- **A free middle square** picked from a few guaranteed sights (sugar-cane fields, the Lubombo mountains, a fuel station and so on).
+
+The host can tap **Deal a different card** until someone makes the first claim.
 
 ## Editing the squares
 
