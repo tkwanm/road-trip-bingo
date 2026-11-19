@@ -14,8 +14,44 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/rooms/$(code)/duels/$(id)).data;
     }
 
-    match /rooms/{code} {
+    // Open-trips list: shows a trip's name and host, never its code.
+    match /lobby/{id} {
       allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['name', 'hostName', 'hostUid', 'createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 40
+        && request.resource.data.hostName is string && request.resource.data.hostName.size() <= 20;
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+    }
+
+    // Cards: every dealt card is saved so it can be replayed later. Cards never change.
+    match /cards/{cardId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['grid', 'wild', 'free', 'solo', 'from', 'createdAt'])
+        && request.resource.data.grid is list && request.resource.data.grid.size() == 25
+        && request.resource.data.wild is list && request.resource.data.wild.size() <= 8
+        && request.resource.data.free is string && request.resource.data.free.size() <= 60
+        && request.resource.data.from is string && request.resource.data.from.size() <= 40;
+
+      // The card's scoreboard: one entry per finished trip, written by that trip's host.
+      match /runs/{tripCode} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && get(/databases/$(database)/documents/rooms/$(tripCode)).data.hostUid == request.auth.uid
+          && get(/databases/$(database)/documents/rooms/$(tripCode)).data.cardId == cardId
+          && get(/databases/$(database)/documents/rooms/$(tripCode)).data.status == 'ended'
+          && request.resource.data.keys().hasOnly(['trip', 'mode', 'top', 'winner', 'players', 'endedAt'])
+          && request.resource.data.top is int && request.resource.data.top <= 300;
+      }
+    }
+
+    match /rooms/{code} {
+      // You can open a trip if you know its code, but nobody can list all trips:
+      // that would reveal every code.
+      allow get: if signedIn();
+      allow list: if false;
       // Anyone signed in can start a trip; they become its host (the referee).
       allow create: if signedIn()
         && request.resource.data.hostUid == request.auth.uid
@@ -23,14 +59,18 @@ service cloud.firestore {
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 40
         && request.resource.data.slots is list
-        && request.resource.data.slots.size() <= 40;
+        && request.resource.data.slots.size() <= 40
+        && request.resource.data.mode in ['group', 'solo']
+        && request.resource.data.cardId is string;
       // Only the host can change the trip (e.g. end it).
       allow update: if signedIn() && resource.data.hostUid == request.auth.uid
         && request.resource.data.hostUid == resource.data.hostUid;
 
       match /players/{uid} {
         allow read: if signedIn();
+        // Solo trips have exactly one player: the host.
         allow create, update: if signedIn() && request.auth.uid == uid
+          && (room(code).mode != 'solo' || room(code).hostUid == request.auth.uid)
           && request.resource.data.name is string
           && request.resource.data.name.size() >= 1
           && request.resource.data.name.size() <= 20;
@@ -45,19 +85,22 @@ service cloud.firestore {
           && isPlayer(code)
           && room(code).status == 'live'
           && request.resource.data.uid == request.auth.uid
-          && request.resource.data.keys().hasOnly(['uid', 'name', 'at'])
-          && key in room(code).slots;
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'at', 'photo'])
+          && key in room(code).slots
+          // Photo proof: a small thumbnail, required on solo trips.
+          && (!('photo' in request.resource.data)
+              || (request.resource.data.photo is string && request.resource.data.photo.size() < 60000))
+          && (room(code).mode != 'solo' || 'photo' in request.resource.data);
         // The only change allowed: handing a claim to the winner of a finished
         // rock-paper-scissors duel over that exact claim.
         allow update: if signedIn()
-          && request.resource.data.keys().hasOnly(['uid', 'name', 'at', 'duelId'])
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'at', 'photo', 'duelId'])
           && duelData(code, request.resource.data.duelId).key == key
           && duelData(code, request.resource.data.duelId).status == 'done'
           && duelData(code, request.resource.data.duelId).winner == request.resource.data.uid
           && resource.data.uid == duelData(code, request.resource.data.duelId).a
           && request.auth.uid in [duelData(code, request.resource.data.duelId).a,
                                   duelData(code, request.resource.data.duelId).b];
-        // You can undo your own claim; the host (referee) can remove anyone's.
         // Undo your own claim while the trip is live; the host (referee) can remove
         // anyone's claim, and clears them all out when the trip ends.
         allow delete: if signedIn()

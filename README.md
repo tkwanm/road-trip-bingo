@@ -78,6 +78,18 @@ Every new trip deals its own card from the 100 sightings in `items.js`. Everyone
 
 The host can tap **Deal a different card** until someone makes the first claim.
 
+## Open trips, replaying cards and solo play
+
+**Open trips.** When you start a trip, it's listed on everyone's home screen by default, showing the trip name, the host and how long ago it started. The trip code is never shown, so joiners still need it from the host. Untick "Show in Open trips" to keep a trip private. A trip drops off the list when it ends, or after 12 hours.
+
+**Play a card later.** Every card has a 6-character card code, shown next to the trip code. After a trip, tap **Challenge someone with this card** on the Scores tab to share a link. Anyone who opens it can play the exact same squares, whenever they travel, alone or in a group. Each finished trip goes onto that card's own scoreboard.
+
+**Solo play.** Use "Travelling alone?" on the home screen:
+- **No people:** solo cards leave out every square involving people. If you replay a group card solo, its people squares are greyed out.
+- **Photo proof:** every claim needs a photo. The app shrinks it to a small thumbnail so it fits Firebase's free plan.
+- **Clean-up:** photos are deleted with the other trip data when you tap End trip.
+- **No joiners:** nobody else can join a solo trip.
+
 ## Editing the squares
 
 Add, remove or re-score sightings in `items.js`. Keep each `id` to letters, digits and dashes. The database rules check claims against each trip's own card, so you don't need to change the rules when you edit the pool. Duel timings are the constants near the top of `app.js` (the 2-second tie window itself is in `firestore.rules`).

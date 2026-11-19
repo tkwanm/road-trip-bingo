@@ -2,10 +2,11 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
-  onSnapshot, runTransaction, serverTimestamp, writeBatch
+  onSnapshot, runTransaction, serverTimestamp, writeBatch,
+  query, orderBy, limit
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
-import { POOL, FREE_OPTIONS } from "./items.js";
+import { POOL, FREE_OPTIONS, involvesPeople } from "./items.js";
 
 /* ---------- Game content ---------- */
 // The 100-sighting pool lives in items.js. Each trip deals its own card from it,
@@ -27,7 +28,7 @@ function shuffle(arr) {
 
 // A balanced deal: SBS ATM always, 2 big-game squares for the end of the drive,
 // 4 lucky (3 pts), 8 likely (2 pts), 9 near-certain (1 pt), max 7 of any one category.
-function dealCard() {
+function dealCard(solo) {
   const pickFrom = (list, n, taken, catCount) => {
     const out = [];
     for (const it of shuffle(list)) {
@@ -40,7 +41,9 @@ function dealCard() {
   };
   const taken = new Set(["atm"]);
   const cats = { roadside: 1 };
-  const normal = i => i.cat !== "reserve" && i.id !== "atm";
+  // Solo cards never include people: a solo player proves each sighting with a photo.
+  const ok = i => !(solo && involvesPeople(i));
+  const normal = i => ok(i) && i.cat !== "reserve" && i.id !== "atm";
   const cells = [
     ITEM.atm,
     ...pickFrom(POOL.filter(i => i.cat === "reserve"), 2, taken, cats),
@@ -52,14 +55,47 @@ function dealCard() {
   grid.splice(12, 0, "free");
   const wild = pickFrom(POOL.filter(i => normal(i) && i.pts >= 4), 8, taken, {}).map(i => i.id);
   const free = shuffle(FREE_OPTIONS)[0];
-  const slots = [...grid.filter(id => id !== "free" && id !== "atm"), ...ATM_KEYS, ...wild];
-  return { grid, wild, free, slots };
+  return { grid, wild, free, solo: !!solo };
+}
+
+// The squares a trip may claim. On a solo trip, people squares (from a group card) are off.
+function slotsFor(card, solo) {
+  const allowed = id => !(solo && involvesPeople(ITEM[id]));
+  return [
+    ...card.grid.filter(id => id !== "free" && id !== "atm" && allowed(id)),
+    ...(card.grid.includes("atm") ? ATM_KEYS : []),
+    ...card.wild.filter(allowed)
+  ];
+}
+
+// Every card gets a 6-character id so it can be replayed later and has its own scoreboard.
+async function saveCard(card, tripName) {
+  for (let i = 0; i < 5; i++) {
+    const id = (newCode() + newCode()).slice(0, 6);
+    try {
+      await setDoc(doc(db, "cards", id), {
+        grid: card.grid, wild: card.wild, free: card.free, solo: !!card.solo,
+        from: tripName, createdAt: serverTimestamp()
+      });
+      return id;
+    } catch (e) { /* id taken: try another */ }
+  }
+  throw new Error("Couldn't save the card. Try again.");
+}
+
+async function fetchCard(cardId) {
+  const snap = await getDoc(doc(db, "cards", cardId)).catch(() => null);
+  if (!snap || !snap.exists()) throw new Error("No card with code " + cardId + ".");
+  const c = snap.data();
+  return { grid: c.grid, wild: c.wild, free: c.free, solo: !!c.solo, from: c.from };
 }
 
 function loadCard(room) {
   if (!room || !Array.isArray(room.grid)) { GRID = []; WILD = []; return; }
-  GRID = room.grid.map(id => id === "free" ? { id: "free", label: room.free || "Free square", free: true } : (ITEM[id] || { id, label: id, pts: 0 }));
-  WILD = (room.wild || []).map(id => ITEM[id] || { id, label: id, pts: 0 });
+  const solo = room.mode === "solo";
+  const mark = it => (solo && involvesPeople(it) ? { ...it, off: true } : it);
+  GRID = room.grid.map(id => id === "free" ? { id: "free", label: room.free || "Free square", free: true } : mark(ITEM[id] || { id, label: id, pts: 0 }));
+  WILD = (room.wild || []).map(id => mark(ITEM[id] || { id, label: id, pts: 0 }));
 }
 
 const ATM_KEYS = ["atm-1", "atm-2", "atm-3"];
@@ -160,12 +196,14 @@ function shareUrl() {
   return location.origin + location.pathname + "?trip=" + S.code;
 }
 const isHost = () => S.room && S.room.hostUid === S.uid;
+const isSolo = () => S.room && S.room.mode === "solo";
 const isLive = () => S.room && S.room.status === "live";
 
 /* ---------- Scoring ---------- */
 function tileState(i) {
   const it = GRID[i];
   if (it.free) return { claimed: true, at: -Infinity, uid: null };
+  if (it.off) return { claimed: false };
   if (it.max) {
     const cs = ATM_SLOTS.map(k => S.claims[k]).filter(Boolean);
     if (!cs.length) return { claimed: false };
@@ -198,13 +236,36 @@ function computeScores() {
 }
 
 /* ---------- Firebase actions ---------- */
-async function createTrip(tripName, playerName) {
+async function createTrip(tripName, playerName, opts) {
+  const { listed = false, solo = false, cardId: wantCard = "" } = opts || {};
+  // Use a shared card if a card code was given, otherwise deal a fresh one.
+  let card, cardId;
+  if (wantCard) {
+    card = await fetchCard(wantCard);
+    cardId = wantCard;
+  } else {
+    card = dealCard(solo);
+    cardId = await saveCard(card, tripName);
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = newCode();
     const ref = doc(db, "rooms", code);
-    const existing = await getDoc(ref);
-    if (existing.exists()) continue;
-    await setDoc(ref, { name: tripName, hostUid: S.uid, status: "live", createdAt: serverTimestamp(), ...dealCard() });
+    const existing = await getDoc(ref).catch(() => null);
+    if (existing && existing.exists()) continue;
+    // Listed trips get a public lobby entry that shows the trip name and host,
+    // never the code: people still need the code from the host to join.
+    const lobbyId = listed && !solo ? newCode().toLowerCase() + newCode().toLowerCase() + newCode().toLowerCase() : null;
+    try {
+      await setDoc(ref, {
+        name: tripName, hostUid: S.uid, status: "live", createdAt: serverTimestamp(), lobbyId,
+        mode: solo ? "solo" : "group", cardId,
+        grid: card.grid, wild: card.wild, free: card.free, slots: slotsFor(card, solo)
+      });
+    } catch (e) { continue; } // code taken by someone else's trip: try another
+    if (lobbyId) {
+      await setDoc(doc(db, "lobby", lobbyId), { name: tripName, hostName: playerName, hostUid: S.uid, createdAt: serverTimestamp() })
+        .catch(() => {});
+    }
     await joinTrip(code, playerName, true);
     return;
   }
@@ -216,6 +277,9 @@ async function joinTrip(code, playerName, skipCheck) {
   if (!skipCheck) {
     const snap = await getDoc(doc(db, "rooms", code));
     if (!snap.exists()) throw new Error("No trip with code " + code + ". Check the code with your driver.");
+    const r = snap.data();
+    if (r.mode === "solo" && r.hostUid !== S.uid) throw new Error("That's a solo trip. Start your own, or play the same card with its card code.");
+    if (r.status !== "live") throw new Error("That trip has already ended.");
   }
   const used = new Set();
   // Pick a colour nobody else in the car has, where possible.
@@ -275,8 +339,9 @@ function leaveTrip() {
   render();
 }
 
-async function claim(key) {
+async function claim(key, photo) {
   if (!isLive()) { toast("This trip has ended."); return; }
+  if (isSolo() && !photo) { toast("Solo play needs a photo to claim."); return false; }
   const me = S.players[S.uid];
   const ref = doc(db, "rooms", S.code, "claims", key);
   try {
@@ -287,7 +352,9 @@ async function claim(key) {
         e.taken = snap.data();
         throw e;
       }
-      tx.set(ref, { uid: S.uid, name: (me && me.name) || "Player", at: serverTimestamp() });
+      const body = { uid: S.uid, name: (me && me.name) || "Player", at: serverTimestamp() };
+      if (photo) body.photo = photo;
+      tx.set(ref, body);
     });
     if (navigator.vibrate) { try { navigator.vibrate(30); } catch (e) {} }
     return true;
@@ -311,7 +378,7 @@ async function unclaim(key) {
   }
 }
 
-async function claimAtm() {
+async function claimAtm(photo) {
   // Two people shouting about the same ATM at once? That's a duel, not two ATMs.
   const recent = ATM_SLOTS
     .map(k => ({ k, c: S.claims[k] }))
@@ -323,15 +390,20 @@ async function claimAtm() {
   for (const k of free) {
     const ref = doc(db, "rooms", S.code, "claims", k);
     const snap = await getDoc(ref);
-    if (!snap.exists()) { await claim(k); return; }
+    if (!snap.exists()) { await claim(k, photo); return; }
   }
   toast("All 3 ATMs have been claimed.");
 }
 
 async function newCard() {
   if (Object.keys(S.claims).length) { toast("Cards can only be re-dealt before anyone claims."); return; }
-  try { await updateDoc(doc(db, "rooms", S.code), dealCard()); toast("Fresh card dealt to everyone!"); }
-  catch (e) { toast("Only the host can deal a new card."); }
+  try {
+    const solo = isSolo();
+    const card = dealCard(solo);
+    const cardId = await saveCard(card, S.room.name);
+    await updateDoc(doc(db, "rooms", S.code), { cardId, grid: card.grid, wild: card.wild, free: card.free, slots: slotsFor(card, solo) });
+    toast(solo ? "Fresh card dealt!" : "Fresh card dealt to everyone!");
+  } catch (e) { toast("Only the host can deal a new card."); }
 }
 
 async function endTrip() {
@@ -357,7 +429,18 @@ async function endTrip() {
       refs.slice(i, i + 400).forEach(r => batch.delete(r));
       await batch.commit();
     }
+    if (S.room && S.room.lobbyId) await deleteDoc(doc(db, "lobby", S.room.lobbyId)).catch(() => {});
+    // Add this trip to the card's scoreboard so people playing the same card later can compare.
+    if (S.room && S.room.cardId && results.length) {
+      await setDoc(doc(db, "cards", S.room.cardId, "runs", S.code), {
+        trip: S.room.name, mode: S.room.mode || "group",
+        top: results[0].total, winner: results[0].name, players: results.length,
+        endedAt: serverTimestamp()
+      }).catch(() => {});
+    }
+    S.runsCache = null;
     toast("Trip ended and cleaned up.");
+    render();
   } catch (e) {
     toast("Trip ended, but the clean-up didn't finish. Publish the latest rules.");
   }
@@ -569,6 +652,74 @@ function renderDuel(force) {
 }
 setInterval(() => renderDuel(false), 200);
 
+/* ---------- Photo proof (solo trips) ---------- */
+// Opens the camera, then shrinks the picture to a small thumbnail (~15 KB) so it fits
+// in the free database tier. Must be called straight from a tap.
+function getPhoto() {
+  return new Promise(resolve => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.capture = "environment";
+    input.style.display = "none";
+    let done = false;
+    const finish = v => { if (done) return; done = true; input.remove(); resolve(v); };
+    input.addEventListener("cancel", () => finish(null));
+    input.addEventListener("change", async () => {
+      const f = input.files && input.files[0];
+      if (!f) return finish(null);
+      try { finish(await shrinkPhoto(f)); } catch (e) { toast("Couldn't read that photo."); finish(null); }
+    });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const max = 260;
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      let q = 0.6, out = c.toDataURL("image/jpeg", q);
+      while (out.length > 38000 && q > 0.25) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+      resolve(out);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("bad image")); };
+    img.src = url;
+  });
+}
+
+/* ---------- Card scoreboard ---------- */
+const cardParam = () => (new URLSearchParams(location.search).get("card") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+function cardShareUrl(cardId) { return location.origin + location.pathname + "?card=" + cardId; }
+
+async function loadRuns(cardId, boxId, n) {
+  const box = document.getElementById(boxId);
+  if (!box || !db || !cardId) return;
+  try {
+    const snap = await getDocs(query(collection(db, "cards", cardId, "runs"), orderBy("top", "desc"), limit(n || 10)));
+    const rows = [];
+    snap.forEach(d => rows.push(d.data()));
+    const html = rows.length
+      ? rows.map((r, i) => `<div class="run-row"><span class="rank">${i + 1}</span>
+          <div><div class="label">${esc(r.winner)} · ${r.top} pts</div>
+          <div class="sub">${esc(r.trip)} · ${r.mode === "solo" ? "solo" : r.players + " players"}</div></div></div>`).join("")
+      : `<p class="muted">Nobody has finished this card yet. Be the first!</p>`;
+    S.runsCache = { id: cardId, html, t: Date.now() };
+    const live = document.getElementById(boxId);
+    if (live) live.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<p class="muted">Couldn't load the scoreboard right now.</p>`;
+  }
+}
+
 /* ---------- Views ---------- */
 function viewSetup() {
   return `
@@ -589,9 +740,23 @@ function viewHome() {
     <h1 class="display title" style="margin-top:4px">Road Trip Bingo</h1>
     <p class="lede">A shared card for the whole car. The first person to claim a sighting gets it — nobody else can.</p>
     <p class="error" id="home-error" role="alert">${esc(S.error)}</p>
+    ${cardParam() ? `<section class="card challenge" aria-labelledby="challenge-title">
+      <h2 id="challenge-title">Card challenge · ${esc(cardParam())}</h2>
+      <p class="muted" style="margin:0 0 10px">Someone shared their card. Play the exact same squares, then see how you rank.</p>
+      <div id="challenge-board"><p class="muted">Loading scores…</p></div>
+    </section>` : ""}
+
+    <section class="card" aria-labelledby="open-trips-title">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <h2 id="open-trips-title" style="margin:0">Open trips</h2>
+        <button type="button" class="btn btn-ghost btn-small" data-action="refresh-lobby">Refresh</button>
+      </div>
+      <p class="muted" style="margin:6px 0 10px">Trips happening now. You'll need the code from the host to join.</p>
+      <div id="lobby-list"><p class="muted">Looking for trips…</p></div>
+    </section>
 
     <form class="card" data-form="join">
-      <h2>${invite ? "You're invited" : "Join a trip"}</h2>
+      <h2>${invite ? "You're invited" : "Join with a code"}</h2>
       <div class="field">
         <label for="join-code">Trip code</label>
         <input id="join-code" class="code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" required value="${esc(invite)}" placeholder="ABCD">
@@ -614,8 +779,77 @@ function viewHome() {
         <label for="host-name">Your name</label>
         <input id="host-name" name="name" maxlength="20" required value="${esc(savedName)}" placeholder="e.g. Kwan">
       </div>
+      <div class="field">
+        <label for="card-code">Card code <span class="muted">(optional, to replay a shared card)</span></label>
+        <input id="card-code" class="code" name="card" maxlength="6" autocomplete="off" autocapitalize="characters" value="${esc(cardParam())}" placeholder="ABC123">
+      </div>
+      <label class="check"><input type="checkbox" name="listed" checked> Show in Open trips so other cars can find it (they still need the code)</label>
       <button class="btn btn-primary" type="submit">Start a new trip</button>
-    </form>`;
+    </form>
+
+    <div class="card">
+      <h2>Travelling alone?</h2>
+      <p class="muted" style="margin:0 0 12px">Your own card with no people squares. Snap a photo of each sighting to claim it. Photos are deleted when you end the trip.</p>
+      <div class="field">
+        <label for="solo-name">Your name</label>
+        <input id="solo-name" maxlength="20" value="${esc(savedName)}" placeholder="e.g. Kwan">
+      </div>
+      <div class="field">
+        <label for="solo-card">Card code <span class="muted">(optional)</span></label>
+        <input id="solo-card" class="code" maxlength="6" autocomplete="off" autocapitalize="characters" value="${esc(cardParam())}" placeholder="ABC123">
+      </div>
+      <button type="button" class="btn btn-plum" data-action="solo">Play solo</button>
+    </div>`;
+}
+
+let lobbyItems = [];
+async function loadLobby() {
+  const box = document.getElementById("lobby-list");
+  if (!box || !db) return;
+  try {
+    const snap = await getDocs(query(collection(db, "lobby"), orderBy("createdAt", "desc"), limit(30)));
+    const cutoff = Date.now() - 12 * 60 * 60 * 1000; // hide trips older than 12 hours
+    lobbyItems = [];
+    snap.forEach(d => {
+      const v = d.data();
+      const t = v.createdAt && v.createdAt.toMillis ? v.createdAt.toMillis() : Date.now();
+      if (t > cutoff) lobbyItems.push({ id: d.id, ...v, t });
+    });
+  } catch (e) {
+    box.innerHTML = `<p class="muted">Couldn't load open trips right now.</p>`;
+    return;
+  }
+  const ago = t => {
+    const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+  };
+  box.innerHTML = lobbyItems.length
+    ? lobbyItems.map(l => `<div class="lobby-row">
+        <div><div class="label">${esc(l.name)}</div><div class="sub">Host: ${esc(l.hostName)} · started ${ago(l.t)}</div></div>
+        <button type="button" class="btn btn-plum btn-small" style="width:auto" data-action="lobby-join" data-id="${esc(l.id)}">Join</button>
+      </div>`).join("")
+    : `<p class="muted">No open trips right now. Start one below!</p>`;
+}
+
+function sheetLobbyJoin(id) {
+  const l = lobbyItems.find(x => x.id === id);
+  if (!l) return;
+  const saved = loadSession();
+  openSheet(`
+    <h3>${esc(l.name)}</h3>
+    <p>Hosted by ${esc(l.hostName)}. Ask them for the 4-letter trip code.</p>
+    <form data-form="lobby-join" data-id="${esc(id)}">
+      <div class="field"><label for="lj-code">Trip code</label>
+        <input id="lj-code" class="code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" required placeholder="ABCD"></div>
+      <div class="field"><label for="lj-name">Your name</label>
+        <input id="lj-name" name="name" maxlength="20" required value="${esc(saved && saved.name ? saved.name : "")}"></div>
+      <p class="error" role="alert"></p>
+      <div class="sheet-actions">
+        <button type="submit" class="btn btn-primary">Join</button>
+        <button type="button" class="btn btn-ghost" data-action="close-sheet">Cancel</button>
+      </div>
+    </form>`);
+  const c = document.getElementById("lj-code"); if (c) c.focus();
 }
 
 function whoHtml(c) {
@@ -637,6 +871,9 @@ function viewCard() {
         <span class="pts">${cs.length}/3 · 2 each</span>
       </button>`;
     }
+    if (it.off) {
+      return `<div class="tile off" role="img" aria-label="${esc(it.label)}: not played solo"><span>${esc(it.label)}</span><span class="pts">Not in solo</span></div>`;
+    }
     const c = S.claims[it.id];
     if (c) {
       const col = colorFor(c.uid);
@@ -652,25 +889,30 @@ function viewCard() {
   const canDeal = isHost() && isLive() && !Object.keys(S.claims).length;
   return `<div class="grid">${tiles}</div>
     ${canDeal ? `<button type="button" class="btn btn-ghost btn-small" data-action="new-card" style="margin-top:12px">Deal a different card</button>` : ""}
-    <p class="legend">Tap a square the moment you spot it. Close a full row, column or diagonal (last square ticked) for +${LINE_BONUS}.</p>`;
+    <p class="legend">${isSolo()
+      ? "Solo: tap a square, then snap a photo of it to claim. Photos are deleted when you end the trip."
+      : "Tap a square the moment you spot it."} Close a full row, column or diagonal (last square ticked) for +${LINE_BONUS}.</p>`;
 }
 
 function viewWild() {
   const rows = WILD.map(w => {
+    if (w.off) {
+      return `<div class="wild off"><div><div class="label">${esc(w.label)}</div><div class="sub">Not in solo play</div></div></div>`;
+    }
     const c = S.claims[w.id];
     if (c) {
       const col = colorFor(c.uid);
       return `<div class="wild claimed" style="border-color:${col};background:${col}1A">
         <div><div class="label">${esc(w.label)}</div><div class="sub"><span class="dot" style="background:${col}"></span>${esc(nameFor(c))} · ${ptsText(w.pts)}</div></div>
-        ${(c.uid === S.uid || isHost()) && isLive() ? `<button type="button" class="btn btn-ghost btn-small" data-action="claimed" data-key="${w.id}">Undo</button>` : ""}
+        ${(c.uid === S.uid || isHost()) && isLive() ? `<button type="button" class="btn btn-ghost btn-small" data-action="claimed" data-key="${w.id}">${c.photo ? "View" : "Undo"}</button>` : ""}
       </div>`;
     }
     return `<div class="wild">
       <div><div class="label">${esc(w.label)}</div><div class="sub">${ptsText(w.pts)} · rare</div></div>
-      <button type="button" class="btn btn-primary btn-small" style="width:auto" data-action="claim" data-key="${w.id}" ${isLive() ? "" : "disabled"}>Claim</button>
+      <button type="button" class="btn btn-primary btn-small" style="width:auto" data-action="claim" data-key="${w.id}" ${isLive() ? "" : "disabled"}>${isSolo() ? "Snap &amp; claim" : "Claim"}</button>
     </div>`;
   }).join("");
-  return `<p class="muted" style="margin:0 0 10px">Rare bonus sightings off the card. Anyone can claim them.</p><div class="wild-list">${rows}</div>`;
+  return `<p class="muted" style="margin:0 0 10px">Rare bonus sightings off the card. ${isSolo() ? "Snap a photo to claim." : "Anyone can claim them."}</p><div class="wild-list">${rows}</div>`;
 }
 
 function viewScores() {
@@ -681,22 +923,35 @@ function viewScores() {
     return `<div class="score-row ${r.total === top && top > 0 ? "lead" : ""}">
       <div class="rank">${i + 1}</div>
       <div>
-        <div class="score-name"><span class="dot" style="background:${standingColor(r)}"></span>${esc(name)}${S.room && S.room.hostUid === r.uid ? ` <span class="muted">· referee</span>` : ""}</div>
+        <div class="score-name"><span class="dot" style="background:${standingColor(r)}"></span>${esc(name)}${S.room && S.room.hostUid === r.uid && !isSolo() ? ` <span class="muted">· referee</span>` : ""}</div>
         <div class="score-detail">${r.spot} card · ${r.wild} wild · ${r.lines} lines</div>
       </div>
       <div class="score-total">${r.total}</div>
     </div>`;
   }).join("") || `<p class="muted">No players yet.</p>`;
+  const rules = isSolo() ? [
+    "Every claim needs a photo of the sighting. The photo is your proof.",
+    "No people squares in solo play. Animals, vehicles, places and things only.",
+    "SBS ATM can be claimed 3 times, one per different ATM.",
+    `Finishing a full row, column or diagonal gets +${LINE_BONUS}.`,
+    "Tap End trip when you arrive. Your score goes on this card's scoreboard and your photos are deleted."
+  ] : [
+    "First to claim a sighting gets it. The app won't let anyone else claim it after.",
+    "SBS ATM can be claimed 3 times, one per different ATM.",
+    `Whoever ticks the last square of a full line gets +${LINE_BONUS}.`,
+    "The host is the referee and can remove a cheeky claim.",
+    "Game ends when the host taps End trip at the reserve."
+  ];
   return `${rows}
+    ${S.room && S.room.cardId ? `<div class="card" style="margin-top:14px">
+      <h2>This card's scoreboard</h2>
+      <p class="muted" style="margin:0 0 10px">Everyone who has played card ${esc(S.room.cardId)}, at any time.</p>
+      <div id="card-board"><p class="muted">Loading…</p></div>
+      <button type="button" class="btn btn-plum" data-action="share-card" style="margin-top:10px">Challenge someone with this card</button>
+    </div>` : ""}
     <div class="card" style="margin-top:14px">
       <h2>House rules</h2>
-      <ol class="rules">
-        <li>First to claim a sighting gets it. The app won't let anyone else claim it after.</li>
-        <li>SBS ATM can be claimed 3 times — one per different ATM.</li>
-        <li>Whoever ticks the last square of a full line gets +${LINE_BONUS}.</li>
-        <li>The host is the referee and can remove a cheeky claim.</li>
-        <li>Game ends when the host taps End trip at the reserve.</li>
-      </ol>
+      <ol class="rules">${rules.map(r => `<li>${esc(r)}</li>`).join("")}</ol>
       ${isHost() && isLive() ? `<button type="button" class="btn btn-primary" data-action="end-ask" style="margin-top:8px">End trip</button>` : ""}
     </div>`;
 }
@@ -721,10 +976,11 @@ function viewGame() {
     <div class="game-head">
       <div>
         <h1 class="display trip-name">${esc(S.room.name)}</h1>
-        <span class="code-pill" aria-label="Trip code ${esc(S.code)}">${esc(S.code)}</span>
+        ${isSolo() ? `<span class="code-pill">SOLO</span>` : `<span class="code-pill" aria-label="Trip code ${esc(S.code)}">${esc(S.code)}</span>`}
+        ${S.room.cardId ? `<span class="card-id" aria-label="Card code ${esc(S.room.cardId)}">Card ${esc(S.room.cardId)}</span>` : ""}
       </div>
       <div class="head-actions">
-        <button type="button" class="btn btn-plum btn-small" style="width:auto" data-action="share">Invite</button>
+        ${isSolo() ? "" : `<button type="button" class="btn btn-plum btn-small" style="width:auto" data-action="share">Invite</button>`}
         <button type="button" class="btn btn-ghost btn-small" data-action="leave">Leave</button>
       </div>
     </div>
@@ -741,12 +997,27 @@ function render() {
   const focusedId = document.activeElement && document.activeElement.id;
   if (!configured) app.innerHTML = viewSetup();
   else if (!S.uid) app.innerHTML = `<p class="muted center" style="margin-top:30px">Getting ready…</p>`;
-  else if (S.code) app.innerHTML = viewGame();
+  else if (S.code) {
+    app.innerHTML = viewGame();
+    // The card's scoreboard: fetched at most once a minute, not on every live update.
+    const id = S.room && S.room.cardId;
+    const box = document.getElementById("card-board");
+    if (box && id) {
+      const c = S.runsCache;
+      if (c && c.id === id && Date.now() - c.t < 60000) box.innerHTML = c.html;
+      else if (!S.runsLoading) {
+        S.runsLoading = true;
+        loadRuns(id, "card-board", 10).finally(() => { S.runsLoading = false; });
+      }
+    }
+  }
   else {
     // Don't wipe what someone is typing on the home screen.
     if (app.dataset.view === "home" && !S.forceHome) return;
     app.innerHTML = viewHome();
     S.forceHome = false;
+    loadLobby();
+    if (cardParam()) loadRuns(cardParam(), "challenge-board", 5);
   }
   app.dataset.view = S.code ? "game" : "home";
   if (focusedId) { const el = document.getElementById(focusedId); if (el) el.focus(); }
@@ -768,6 +1039,7 @@ function sheetForClaimed(key) {
   openSheet(`
     <h3>${esc(label)}</h3>
     <p>Claimed by <strong>${esc(nameFor(c))}</strong> for ${ptsText(pointsFor(key))}.</p>
+    ${typeof c.photo === "string" && c.photo.startsWith("data:image/jpeg") ? `<img class="proof" src="${c.photo}" alt="Photo proof of ${esc(label)}">` : ""}
     <div class="sheet-actions">
       ${canRemove ? `<button type="button" class="btn btn-primary" data-action="unclaim" data-key="${key}">${c.uid === S.uid ? "Undo my claim" : "Remove claim (referee)"}</button>` : ""}
       <button type="button" class="btn btn-ghost" data-action="close-sheet">Close</button>
@@ -807,15 +1079,39 @@ document.addEventListener("click", async e => {
   if (a === "rps") { duelRoot.querySelectorAll(".duel-move").forEach(b => { b.disabled = true; }); await pickMove(el.dataset.move); return; }
   if (a === "duel-close") { S.dlResult = null; if (!myLiveDuel()) S.dl = null; renderDuel(true); return; }
   if (a === "claim") {
+    // Solo: the camera has to open straight from the tap, before anything else.
+    const photoP = isSolo() ? getPhoto() : null;
     el.disabled = true;
-    const ok = await claim(el.dataset.key);
+    const photo = photoP ? await photoP : null;
+    if (photoP && !photo) { if (el.isConnected) el.disabled = false; return; }
+    const ok = await claim(el.dataset.key, photo);
     if (!ok && el.isConnected) el.disabled = false;
     return;
   }
   if (a === "claimed") { sheetForClaimed(el.dataset.key); return; }
   if (a === "unclaim") { closeSheet(); await unclaim(el.dataset.key); return; }
   if (a === "atm") { sheetForAtm(); return; }
-  if (a === "claim-atm") { closeSheet(); await claimAtm(); return; }
+  if (a === "claim-atm") {
+    const photoP = isSolo() ? getPhoto() : null;
+    closeSheet();
+    const photo = photoP ? await photoP : null;
+    if (photoP && !photo) return;
+    await claimAtm(photo);
+    return;
+  }
+  if (a === "share-card") {
+    const id = S.room && S.room.cardId;
+    if (!id) return;
+    const url = cardShareUrl(id);
+    const best = standings()[0];
+    const text = best && best.total ? `Can you beat ${best.total} points on this Road Trip Bingo card? Card ${id}` : `Play my Road Trip Bingo card! Card ${id}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: "Road Trip Bingo card", text, url }); return; } catch (err) { if (err && err.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(text + " — " + url); toast("Card link copied"); }
+    catch (err) { toast("Card code: " + id); }
+    return;
+  }
   if (a === "leave") { leaveTrip(); return; }
   if (a === "end-ask") {
     openSheet(`<h3>End the trip?</h3><p>Nobody can claim anything after this, and the winner is announced.</p>
@@ -824,6 +1120,21 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "end") { closeSheet(); await endTrip(); return; }
+  if (a === "refresh-lobby") { loadLobby(); return; }
+  if (a === "lobby-join") { sheetLobbyJoin(el.dataset.id); return; }
+  if (a === "solo") {
+    const input = document.getElementById("solo-name");
+    const name = (input && input.value || "").trim().slice(0, 20);
+    const errEl = document.getElementById("home-error");
+    if (!name) { if (input) input.focus(); return; }
+    const cardIn = document.getElementById("solo-card");
+    const cardId = (cardIn && cardIn.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    el.disabled = true;
+    try { await createTrip("Solo trip", name, { solo: true, cardId }); }
+    catch (err) { if (errEl) errEl.textContent = err && /No card/.test(err.message || "") ? err.message : "Couldn't start the trip. Check your signal and try again."; }
+    finally { el.disabled = false; }
+    return;
+  }
   if (a === "new-card") { el.disabled = true; await newCard(); return; }
   if (a === "share") {
     const url = shareUrl();
@@ -844,7 +1155,7 @@ document.addEventListener("submit", async e => {
   const name = String(data.get("name") || "").trim().slice(0, 20);
   if (!name) return;
   const btn = form.querySelector("button[type=submit]");
-  const errEl = document.getElementById("home-error");
+  const errEl = form.querySelector(".error") || document.getElementById("home-error");
   if (S.busy) return;
   S.busy = true;
   if (btn) btn.disabled = true;
@@ -852,17 +1163,22 @@ document.addEventListener("submit", async e => {
   try {
     if (form.dataset.form === "create") {
       const trip = String(data.get("trip") || "").trim().slice(0, 40) || "Road trip";
-      await createTrip(trip, name);
+      const cardId = String(data.get("card") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      await createTrip(trip, name, { listed: data.get("listed") === "on", cardId });
     } else {
       const code = String(data.get("code") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (code.length !== 4) throw new Error("Trip codes are 4 characters.");
+      if (form.dataset.form === "lobby-join") {
+        const room = await getDoc(doc(db, "rooms", code)).catch(() => null);
+        if (!room || !room.exists() || room.data().lobbyId !== form.dataset.id) throw new Error("That code isn't for this trip. Check with the host.");
+      }
       await joinTrip(code, name);
+      closeSheet();
     }
   } catch (err) {
     const msg = err && err.message && !/permission|insufficient/i.test(err.message)
       ? err.message : "Something went wrong. Check your signal and try again.";
-    const live = document.getElementById("home-error");
-    if (live) live.textContent = msg;
+    if (errEl && errEl.isConnected) errEl.textContent = msg;
   } finally {
     S.busy = false;
     if (btn) btn.disabled = false;

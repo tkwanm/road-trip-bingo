@@ -3,6 +3,7 @@
 //
 // pts: 1 = you'll almost certainly see it · 2 = likely · 3 = lucky · 4 = rare (wild-card pool) · 5 = big game
 // cat: used to keep each card varied.
+// people: true marks squares that involve people; solo trips leave out these and the whole "people" category.
 // ids: letters, digits and dashes only (they become database keys). Don't rename an id mid-trip.
 
 export const POOL = [
@@ -20,7 +21,7 @@ export const POOL = [
   { id: "pig", label: "A pig", pts: 3, cat: "animal" },
   { id: "chickens", label: "Chickens by the road", pts: 1, cat: "animal" },
   { id: "dog-chase", label: "Dog chasing a car", pts: 2, cat: "animal" },
-  { id: "herder", label: "Cattle herd with a herder", pts: 1, cat: "animal" },
+  { id: "herder", label: "Cattle herd with a herder", pts: 1, cat: "animal", people: true },
   { id: "birds", label: "Two birds sitting together", pts: 1, cat: "animal" },
   { id: "raptor", label: "Bird of prey on a pole", pts: 3, cat: "animal" },
   { id: "hornbill", label: "A hornbill", pts: 4, cat: "animal" },
@@ -55,7 +56,7 @@ export const POOL = [
   // ---------- Vehicles ----------
   { id: "canetruck", label: "Sugar-cane truck", pts: 2, cat: "vehicle" },
   { id: "kombi", label: "Kombi with roof load or trailer", pts: 2, cat: "vehicle" },
-  { id: "bakkie", label: "Bakkie with people in the back", pts: 1, cat: "vehicle" },
+  { id: "bakkie", label: "Bakkie with people in the back", pts: 1, cat: "vehicle", people: true },
   { id: "police", label: "Police roadblock", pts: 2, cat: "vehicle" },
   { id: "yellowcar", label: "A yellow car", pts: 3, cat: "vehicle" },
   { id: "train", label: "A train actually moving", pts: 4, cat: "vehicle" },
@@ -125,3 +126,6 @@ export const FREE_OPTIONS = [
   "A kombi",
   "A speed hump"
 ];
+
+// Squares that involve people. Solo players (who'd need to photograph them) never get these.
+export const involvesPeople = it => !!it && (it.cat === "people" || !!it.people);
