@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
-  onSnapshot, runTransaction, serverTimestamp
+  onSnapshot, runTransaction, serverTimestamp, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { POOL, FREE_OPTIONS } from "./items.js";
@@ -297,7 +297,8 @@ async function claim(key) {
       if (await startDuel(key, e.taken)) return false;
     }
     if (e.taken) toast(nameFor(e.taken) + " already claimed that one!");
-    else toast("Someone beat you to it, or the connection dropped.");
+    else if (e && e.code === "permission-denied") toast("The game server refused that. Ask the host to publish the latest rules, then refresh.");
+    else toast("Couldn't reach the game server. Check your signal and try again.");
     return false;
   }
 }
@@ -334,9 +335,41 @@ async function newCard() {
 }
 
 async function endTrip() {
-  try { await updateDoc(doc(db, "rooms", S.code), { status: "ended" }); }
-  catch (e) { toast("Only the host can end the trip."); }
+  // Save the final scoreboard on the trip itself, then clear out the trip's
+  // claims, duels and players so nothing is left lying around in the database.
+  const results = computeScores().map(r => ({
+    uid: r.uid,
+    name: (S.players[r.uid] || {}).name || "Player",
+    color: colorFor(r.uid),
+    spot: r.spot, wild: r.wild, lines: r.lines, total: r.total
+  }));
+  try {
+    await updateDoc(doc(db, "rooms", S.code), { status: "ended", results, endedAt: serverTimestamp() });
+  } catch (e) { toast("Only the host can end the trip."); return; }
+  try {
+    const refs = [];
+    for (const sub of ["claims", "duels", "players"]) {
+      const snap = await getDocs(collection(db, "rooms", S.code, sub));
+      snap.forEach(d => refs.push(d.ref));
+    }
+    for (let i = 0; i < refs.length; i += 400) {
+      const batch = writeBatch(db);
+      refs.slice(i, i + 400).forEach(r => batch.delete(r));
+      await batch.commit();
+    }
+    toast("Trip ended and cleaned up.");
+  } catch (e) {
+    toast("Trip ended, but the clean-up didn't finish. Publish the latest rules.");
+  }
 }
+
+// Final scores come from the saved results once a trip has ended and been cleaned up.
+function standings() {
+  if (S.room && Array.isArray(S.room.results)) return S.room.results;
+  return computeScores();
+}
+const standingName = r => (S.players[r.uid] || {}).name || r.name || "Someone";
+const standingColor = r => r.color || colorFor(r.uid);
 
 /* ---------- Rock-paper-scissors duels ---------- */
 const duelRoot = document.getElementById("duel-root");
@@ -641,15 +674,14 @@ function viewWild() {
 }
 
 function viewScores() {
-  const scores = computeScores();
+  const scores = standings();
   const top = scores[0] ? scores[0].total : 0;
   const rows = scores.map((r, i) => {
-    const p = S.players[r.uid] || {};
-    const name = r.uid === S.uid ? (p.name || "You") + " (you)" : (p.name || "Someone");
+    const name = r.uid === S.uid ? standingName(r) + " (you)" : standingName(r);
     return `<div class="score-row ${r.total === top && top > 0 ? "lead" : ""}">
       <div class="rank">${i + 1}</div>
       <div>
-        <div class="score-name"><span class="dot" style="background:${colorFor(r.uid)}"></span>${esc(name)}${S.room && S.room.hostUid === r.uid ? ` <span class="muted">· referee</span>` : ""}</div>
+        <div class="score-name"><span class="dot" style="background:${standingColor(r)}"></span>${esc(name)}${S.room && S.room.hostUid === r.uid ? ` <span class="muted">· referee</span>` : ""}</div>
         <div class="score-detail">${r.spot} card · ${r.wild} wild · ${r.lines} lines</div>
       </div>
       <div class="score-total">${r.total}</div>
@@ -674,12 +706,12 @@ function viewGame() {
     return `<p class="muted center" style="margin-top:30px">Loading trip ${esc(S.code)}…</p>
       <div class="center"><button type="button" class="btn btn-ghost btn-small" data-action="leave">Back</button></div>`;
   }
-  const scores = computeScores();
+  const scores = standings();
   const mine = scores.find(r => r.uid === S.uid);
   let banner = "";
   if (!isLive()) {
     const w = scores[0];
-    const wn = w ? (w.uid === S.uid ? "You" : (S.players[w.uid] || {}).name || "Someone") : "Nobody";
+    const wn = w ? (w.uid === S.uid ? "You" : standingName(w)) : "Nobody";
     banner = `<div class="banner">Trip over! Winner: <strong>${esc(wn)}</strong> with ${w ? w.total : 0} points.</div>`;
   }
   const watching = Object.values(S.duels).filter(d => d.status === "live" && d.a !== S.uid && d.b !== S.uid);

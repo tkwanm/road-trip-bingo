@@ -58,8 +58,11 @@ service cloud.firestore {
           && request.auth.uid in [duelData(code, request.resource.data.duelId).a,
                                   duelData(code, request.resource.data.duelId).b];
         // You can undo your own claim; the host (referee) can remove anyone's.
-        allow delete: if signedIn() && room(code).status == 'live'
-          && (resource.data.uid == request.auth.uid || room(code).hostUid == request.auth.uid);
+        // Undo your own claim while the trip is live; the host (referee) can remove
+        // anyone's claim, and clears them all out when the trip ends.
+        allow delete: if signedIn()
+          && ((room(code).status == 'live' && resource.data.uid == request.auth.uid)
+              || room(code).hostUid == request.auth.uid);
       }
 
       // Rock-paper-scissors duels. A duel can only be started by someone who tried
@@ -67,6 +70,8 @@ service cloud.firestore {
       // server's clock decides, so nobody can fake a tie later.
       match /duels/{id} {
         allow read: if signedIn();
+        // The host clears finished duels when the trip ends.
+        allow delete: if signedIn() && room(code).hostUid == request.auth.uid;
         allow create: if signedIn()
           && isPlayer(code)
           && room(code).status == 'live'
