@@ -80,4 +80,4 @@ The host can tap **Deal a different card** until someone makes the first claim.
 
 ## Editing the squares
 
-The squares are in the `GRID` and `WILD` lists at the top of `app.js`. Duel timings are the constants under `ATM_SLOTS` in `app.js` (the 2-second tie window itself is in `firestore.rules`). If you add or rename a square's `id`, also add it to the list of allowed keys in `firestore.rules` and publish the rules again. Otherwise claims on that square will be refused.
+Add, remove or re-score sightings in `items.js`. Keep each `id` to letters, digits and dashes. The database rules check claims against each trip's own card, so you don't need to change the rules when you edit the pool. Duel timings are the constants near the top of `app.js` (the 2-second tie window itself is in `firestore.rules`).
